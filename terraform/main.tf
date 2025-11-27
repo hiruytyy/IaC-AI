@@ -63,7 +63,7 @@ data "archive_file" "lambda_zip" {
 # Runs daily via EventBridge and sends findings to SNS
 resource "aws_lambda_function" "sg_auditor" {
   filename         = data.archive_file.lambda_zip.output_path
-  function_name    = "security-group-auditor"
+  function_name    = var.lambda_function_name
   role            = aws_iam_role.sg_auditor_role.arn
   handler         = "sg_auditor.lambda_handler"  # Python function entry point
   runtime         = "python3.11"
@@ -75,13 +75,14 @@ resource "aws_lambda_function" "sg_auditor" {
     variables = {
       # Pass SNS topic ARN to Lambda for sending alerts
       SNS_TOPIC_ARN = aws_sns_topic.alerts.arn
+      BEDROCK_MODEL_ID = var.bedrock_model_id
     }
   }
 }
 
 # SNS topic for sending security alert emails
 resource "aws_sns_topic" "alerts" {
-  name = "sg-auditor-alerts"
+  name = var.sns_topic_name
 }
 
 # Email subscription to SNS topic
