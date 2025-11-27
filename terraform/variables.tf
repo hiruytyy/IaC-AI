@@ -24,5 +24,5 @@ variable "lambda_function_name" {
 variable "bedrock_model_id" {
   description = "Bedrock model ID for AI analysis"
   type        = string
-  default     = "anthropic.claude-3-sonnet-20240229-v1:0"
+  default     = "amazon.nova-pro-v1:0"
 }

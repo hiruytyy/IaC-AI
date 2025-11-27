@@ -140,37 +140,73 @@ def analyze_with_bedrock(sg, risky_rules, resources):
     Returns:
         str: AI-generated analysis and recommendations
     """
-    # Construct prompt with security finding details
-    prompt = f"""Analyze this security group finding:
+    try:
+        # Construct prompt with security finding details - minimal format
+        ports_list = ', '.join([f"port {r['port']}" for r in risky_rules])
+        prompt = f"""Review AWS security group {sg['GroupId']} in VPC {sg.get('VpcId')}.
 
-Security Group: {sg['GroupId']} ({sg.get('GroupName')})
-VPC: {sg.get('VpcId')}
-Risky Rules: {json.dumps(risky_rules)}
-Attached Resources: {json.dumps(resources)}
+Configuration: {ports_list} accessible from internet (0.0.0.0/0)
+Attached resources: {len(resources)}
 
 Provide:
-1. Threat explanation (2 sentences)
-2. Business impact (2 sentences)
-3. Remediation steps (3-5 bullet points)
-4. Terraform code to fix
-5. Compliance violations
+1. Risk (2 sentences)
+2. Impact (2 sentences)
+3. Fix steps (3-5 points)
+4. Terraform example
+5. Standards affected"""
 
-Keep response concise and actionable."""
+        # Call Bedrock with model from environment variable
+        model_id = os.environ.get('BEDROCK_MODEL_ID', 'amazon.nova-pro-v1:0')
+        
+        # Use appropriate API format based on model
+        if 'anthropic' in model_id:
+            body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 1000,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+        else:  # Amazon Nova models
+            body = {
+                "system": [{"text": "You are a senior network security engineer with expertise in AWS cloud security and compliance. Follow industry best practices and provide actionable recommendations."}],
+                "messages": [{"role": "user", "content": [{"text": prompt}]}],
+                "inferenceConfig": {"max_new_tokens": 1000}
+            }
+        
+        # Log the payload for debugging
+        print(f"Bedrock Model: {model_id}")
+        print(f"Payload: {json.dumps(body, indent=2)}")
+        
+        response = bedrock.invoke_model(
+            modelId=model_id,
+            body=json.dumps(body)
+        )
+        
+        # Parse response based on model
+        result = json.loads(response['body'].read())
+        if 'anthropic' in model_id:
+            return result['content'][0]['text']
+        else:  # Amazon Nova
+            return result['output']['message']['content'][0]['text']
+            
+    except Exception as e:
+        # Return basic analysis if Bedrock is unavailable
+        error_msg = str(e)
+        basic_analysis = f"""⚠️ AI Analysis unavailable: {error_msg}
 
-    # Call Bedrock with model from environment variable
-    model_id = os.environ.get('BEDROCK_MODEL_ID', 'anthropic.claude-3-sonnet-20240229-v1:0')
-    response = bedrock.invoke_model(
-        modelId=model_id,
-        body=json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1000,  # Limit response length
-            "messages": [{"role": "user", "content": prompt}]
-        })
-    )
-    
-    # Parse and return AI response
-    result = json.loads(response['body'].read())
-    return result['content'][0]['text']
+MANUAL REVIEW REQUIRED:
+- Ports exposed: {', '.join([f"{RISKY_PORTS.get(r['port'], 'Port ' + str(r['port']))}" for r in risky_rules])}
+- Source: Internet (0.0.0.0/0)
+- Risk: High - Exposed to brute-force attacks and unauthorized access
+
+RECOMMENDED ACTIONS:
+1. Restrict access to specific IP ranges only
+2. Use VPN or bastion host for remote access
+3. Enable MFA and strong authentication
+4. Monitor access logs for suspicious activity
+5. Consider using AWS Systems Manager Session Manager instead of direct SSH/RDP
+
+COMPLIANCE: May violate CIS AWS Foundations, NIST, PCI DSS, HIPAA, GDPR"""
+        return basic_analysis
 
 def send_alert(findings):
     """
@@ -183,17 +219,39 @@ def send_alert(findings):
         findings (list): List of security group findings
     """
     # Build email message with summary
-    message = f"🚨 Security Group Audit - {len(findings)} Issues Found\n\n"
+    message = f"🚨 SECURITY ALERT: {len(findings)} Vulnerable Security Group(s) Detected\n"
+    message += "=" * 70 + "\n\n"
     
     # Include details for first 5 findings (avoid email size limits)
-    for f in findings[:5]:
-        message += f"• {f['security_group_id']} ({f['name']})\n"
-        message += f"  Rules: {len(f['risky_rules'])} risky\n"
-        message += f"  Resources: {len(f['attached_resources'])}\n\n"
+    for i, f in enumerate(findings[:5], 1):
+        message += f"[{i}] Security Group: {f['name']} ({f['security_group_id']})\n"
+        message += f"    VPC: {f['vpc_id']}\n"
+        message += f"    Attached Resources: {len(f['attached_resources'])} resource(s)\n"
+        
+        # List risky rules with details
+        message += f"    Risky Rules ({len(f['risky_rules'])}):\n"
+        for rule in f['risky_rules']:
+            port_name = RISKY_PORTS.get(rule['port'], f"Port {rule['port']}")
+            message += f"      - {port_name} ({rule['protocol']}/{rule['port']}) open to {rule['source']}\n"
+        
+        # Add AI summary (first 3 lines)
+        ai_lines = f['ai_analysis'].split('\n')[:3]
+        message += f"\n    AI Analysis:\n"
+        for line in ai_lines:
+            if line.strip():
+                message += f"      {line.strip()}\n"
+        
+        message += "\n" + "-" * 70 + "\n\n"
+    
+    if len(findings) > 5:
+        message += f"... and {len(findings) - 5} more issue(s)\n\n"
+    
+    message += "⚠️  ACTION REQUIRED: Review and remediate these security groups immediately.\n"
+    message += "Run Lambda function for full details and Terraform remediation code.\n"
     
     # Publish to SNS topic
     sns.publish(
         TopicArn=os.environ['SNS_TOPIC_ARN'],  # From Terraform environment variable
-        Subject='Security Group Audit Alert',
+        Subject=f'🚨 URGENT: {len(findings)} Security Group Issue(s) Detected',
         Message=message
     )
