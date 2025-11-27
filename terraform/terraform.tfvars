@@ -1,5 +1,5 @@
 aws_region           = "us-east-1"
-alert_email          = "mathphysicstutor76@gmail.com"
+alert_email          = "ureamil6@gmail.com"
 sns_topic_name       = "sg-auditor-alerts"
 lambda_function_name = "security-group-auditor"
 bedrock_model_id     = "amazon.nova-pro-v1:0"
