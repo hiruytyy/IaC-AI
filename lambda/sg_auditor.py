@@ -124,90 +124,84 @@ def get_attached_resources(sg_id):
 
 def analyze_with_bedrock(sg, risky_rules, resources):
     """
-    Use Amazon Bedrock AI to analyze security findings
-    
-    Sends security group details to Claude AI model for:
-    - Threat assessment
-    - Business impact analysis
-    - Remediation recommendations
-    - Terraform code generation
-    
-    Args:
-        sg (dict): Security group details
-        risky_rules (list): List of risky ingress rules
-        resources (list): Resources using this security group
-        
-    Returns:
-        str: AI-generated analysis and recommendations
+    Use Amazon Bedrock AI with 3 separate API calls for remediation options
     """
     try:
-        # Construct prompt with security finding details - minimal format
-        ports_list = ', '.join([f"{RISKY_PORTS.get(r['port'], 'port ' + str(r['port']))} ({r['protocol']}/{r['port']})" for r in risky_rules])
-        resource_count = len(resources)
+        ports_list = ', '.join([f"{RISKY_PORTS.get(r['port'], 'port ' + str(r['port']))}" for r in risky_rules])
+        model_id = os.environ.get('BEDROCK_MODEL_ID', 'amazon.nova-lite-v1:0')
         
-        prompt = f"""Review AWS security group {sg['GroupId']} ({sg.get('GroupName')}) in VPC {sg.get('VpcId')}.
+        # Call 1: AWS Console Steps with confidence
+        console_prompt = f"""Security Group {sg['GroupId']} has {ports_list} from 0.0.0.0/0
 
-Configuration: {ports_list} open to internet (0.0.0.0/0)
-Attached resources: {resource_count}
+Provide AWS Console fix steps and rate your confidence:
+1. Step-by-step console instructions
+2. Exact menu paths and clicks
+3. At the end, provide: "Confidence Score: X/100" where X is how confident you are in this solution"""
 
-Provide professional assessment:
-1. Risk (2-3 sentences)
-2. Business impact (2-3 sentences)
-3. Remediation steps (5 specific actions)
-4. Terraform code example
-5. Compliance standards with control references"""
+        console_body = {"messages": [{"role": "user", "content": [{"text": console_prompt}]}], "inferenceConfig": {"max_new_tokens": 800}}
+        console_response = bedrock.invoke_model(modelId=model_id, body=json.dumps(console_body))
+        console_steps = json.loads(console_response['body'].read())['output']['message']['content'][0]['text']
+        
+        # Call 2: AWS CLI Commands with confidence
+        cli_prompt = f"""Security Group {sg['GroupId']} has {ports_list} from 0.0.0.0/0
 
-        # Call Bedrock with model from environment variable
-        model_id = os.environ.get('BEDROCK_MODEL_ID', 'amazon.nova-pro-v1:0')
+Provide AWS CLI commands and rate your confidence:
+1. Exact commands to revoke risky rules
+2. Commands to add restricted rules
+3. At the end, provide: "Confidence Score: X/100" where X is how confident you are in this solution"""
+
+        cli_body = {"messages": [{"role": "user", "content": [{"text": cli_prompt}]}], "inferenceConfig": {"max_new_tokens": 800}}
+        cli_response = bedrock.invoke_model(modelId=model_id, body=json.dumps(cli_body))
+        cli_steps = json.loads(cli_response['body'].read())['output']['message']['content'][0]['text']
         
-        # Use appropriate API format based on model
-        if 'anthropic' in model_id:
-            body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 1000,
-                "messages": [{"role": "user", "content": prompt}]
-            }
-        else:  # Amazon Nova models
-            body = {
-                "messages": [{"role": "user", "content": [{"text": prompt}]}],
-                "inferenceConfig": {"max_new_tokens": 1200}
-            }
+        # Call 3: Amazon Q Developer with confidence
+        q_prompt = f"""Security Group {sg['GroupId']} has {ports_list} from 0.0.0.0/0
+
+Provide Amazon Q Developer guidance and rate your confidence:
+1. How to use Q Developer to fix this
+2. What prompts to give Q Developer
+3. At the end, provide: "Confidence Score: X/100" where X is how confident you are in this solution"""
+
+        q_body = {"messages": [{"role": "user", "content": [{"text": q_prompt}]}], "inferenceConfig": {"max_new_tokens": 800}}
+        q_response = bedrock.invoke_model(modelId=model_id, body=json.dumps(q_body))
+        q_steps = json.loads(q_response['body'].read())['output']['message']['content'][0]['text']
         
-        # Log the payload for debugging
-        print(f"Bedrock Model: {model_id}")
-        print(f"Payload: {json.dumps(body, indent=2)}")
+        # Calculate overall severity
+        severity = "CRITICAL" if len(resources) > 0 else "HIGH"
         
-        response = bedrock.invoke_model(
-            modelId=model_id,
-            body=json.dumps(body)
-        )
-        
-        # Parse response based on model
-        result = json.loads(response['body'].read())
-        if 'anthropic' in model_id:
-            return result['content'][0]['text']
-        else:  # Amazon Nova
-            return result['output']['message']['content'][0]['text']
+        return f"""
+╔══════════════════════════════════════════════════════════════════════╗
+║ SEVERITY: {severity}                                                  
+║ Security Group: {sg['GroupId']} ({sg.get('GroupName')})
+║ Issue: {ports_list} exposed to internet (0.0.0.0/0)
+║ Attached Resources: {len(resources)}
+║ Compliance: Violates CIS AWS Foundations, NIST SP 800-53, PCI DSS
+╚══════════════════════════════════════════════════════════════════════╝
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║ FIX OPTION 1: AWS CONSOLE                                            ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+{console_steps}
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║ FIX OPTION 2: AWS CLI                                                ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+{cli_steps}
+
+
+╔══════════════════════════════════════════════════════════════════════╗
+║ FIX OPTION 3: AMAZON Q DEVELOPER                                     ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+{q_steps}
+"""
             
     except Exception as e:
-        # Return basic analysis if Bedrock is unavailable
-        error_msg = str(e)
-        basic_analysis = f"""⚠️ AI Analysis unavailable: {error_msg}
-
-MANUAL REVIEW REQUIRED:
-- Ports exposed: {', '.join([f"{RISKY_PORTS.get(r['port'], 'Port ' + str(r['port']))}" for r in risky_rules])}
-- Source: Internet (0.0.0.0/0)
-- Risk: High - Exposed to brute-force attacks and unauthorized access
-
-RECOMMENDED ACTIONS:
-1. Restrict access to specific IP ranges only
-2. Use VPN or bastion host for remote access
-3. Enable MFA and strong authentication
-4. Monitor access logs for suspicious activity
-5. Consider using AWS Systems Manager Session Manager instead of direct SSH/RDP
-
-COMPLIANCE: May violate CIS AWS Foundations, NIST, PCI DSS, HIPAA, GDPR"""
-        return basic_analysis
+        return f"⚠️ AI Analysis unavailable: {str(e)}"
 
 def send_alert(findings):
     """
@@ -235,8 +229,8 @@ def send_alert(findings):
             port_name = RISKY_PORTS.get(rule['port'], f"Port {rule['port']}")
             message += f"      - {port_name} ({rule['protocol']}/{rule['port']}) open to {rule['source']}\n"
         
-        # Add AI summary (first 3 lines)
-        ai_lines = f['ai_analysis'].split('\n')[:3]
+        # Add complete AI analysis
+        ai_lines = f['ai_analysis'].split('\n')
         message += f"\n    AI Analysis:\n"
         for line in ai_lines:
             if line.strip():
