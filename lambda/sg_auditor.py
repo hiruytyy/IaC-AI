@@ -142,18 +142,20 @@ def analyze_with_bedrock(sg, risky_rules, resources):
     """
     try:
         # Construct prompt with security finding details - minimal format
-        ports_list = ', '.join([f"port {r['port']}" for r in risky_rules])
-        prompt = f"""Review AWS security group {sg['GroupId']} in VPC {sg.get('VpcId')}.
+        ports_list = ', '.join([f"{RISKY_PORTS.get(r['port'], 'port ' + str(r['port']))} ({r['protocol']}/{r['port']})" for r in risky_rules])
+        resource_count = len(resources)
+        
+        prompt = f"""Review AWS security group {sg['GroupId']} ({sg.get('GroupName')}) in VPC {sg.get('VpcId')}.
 
-Configuration: {ports_list} accessible from internet (0.0.0.0/0)
-Attached resources: {len(resources)}
+Configuration: {ports_list} open to internet (0.0.0.0/0)
+Attached resources: {resource_count}
 
-Provide:
-1. Risk (2 sentences)
-2. Impact (2 sentences)
-3. Fix steps (3-5 points)
-4. Terraform example
-5. Standards affected"""
+Provide professional assessment:
+1. Risk (2-3 sentences)
+2. Business impact (2-3 sentences)
+3. Remediation steps (5 specific actions)
+4. Terraform code example
+5. Compliance standards with control references"""
 
         # Call Bedrock with model from environment variable
         model_id = os.environ.get('BEDROCK_MODEL_ID', 'amazon.nova-pro-v1:0')
@@ -167,9 +169,8 @@ Provide:
             }
         else:  # Amazon Nova models
             body = {
-                "system": [{"text": "You are a senior network security engineer with expertise in AWS cloud security and compliance. Follow industry best practices and provide actionable recommendations."}],
                 "messages": [{"role": "user", "content": [{"text": prompt}]}],
-                "inferenceConfig": {"max_new_tokens": 1000}
+                "inferenceConfig": {"max_new_tokens": 1200}
             }
         
         # Log the payload for debugging
